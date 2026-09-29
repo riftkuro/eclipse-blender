@@ -1,10 +1,10 @@
 bl_info = {
     'name': 'Eclipse',
     'author': 'riftkuro',
-    'version': (1, 5, 0),
+    'version': (1, 5, 1),
     'blender': (4, 2, 0),
     'location': 'View3D > Sidebar > Eclipse',
-    'description': 'Sync rigs, custom output bones and cameras with an Eclipse animation file',
+    'description': 'Sync rigs, custom output bones and cameras with an Eclipse animation file, and export armatures to Eclipse',
     'category': 'Import-Export',
 }
 
@@ -12,6 +12,7 @@ import bpy
 from bpy.app.handlers import persistent
 from bpy_extras.io_utils import ImportHelper
 from . import engine
+from . import armature_export
 
 
 class ECLIPSE_OT_server(bpy.types.Operator):
@@ -120,6 +121,7 @@ def register():
     for cls in _classes:
         bpy.utils.register_class(cls)
     bpy.app.handlers.load_pre.append(before_load)
+    armature_export.register()
     _registered = True
 
 
@@ -128,6 +130,7 @@ def unregister():
     if not _registered:
         return
     engine.stop()
+    armature_export.unregister()
     if before_load in bpy.app.handlers.load_pre:
         bpy.app.handlers.load_pre.remove(before_load)
     for cls in reversed(_classes):
