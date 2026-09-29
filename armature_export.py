@@ -1,6 +1,7 @@
 import bpy
 import json
 import math
+import re
 from mathutils import Matrix, Vector
 from bpy_extras.io_utils import ExportHelper
 
@@ -361,6 +362,69 @@ def collect_reference(context, widgets, scale):
     }
 
 
+def bezier_weights(t):
+    u = 1 - t
+    return (u * u * u, 3 * u * u * t, 3 * u * t * t, t * t * t)
+
+
+def curve_path(obj, deps, scale):
+    splines = obj.data.splines
+    if not splines:
+        return None
+    spline = splines[0]
+    controls, points, radius, weights = [], [], [], []
+    cyclic = bool(spline.use_cyclic_u)
+    if spline.type == 'BEZIER':
+        knots = spline.bezier_points
+        for knot in knots:
+            controls.extend([list(knot.handle_left * scale), list(knot.co * scale), list(knot.handle_right * scale)])
+        count = len(knots)
+        steps = max(1, spline.resolution_u)
+        order = [count - 1] + list(range(count - 1)) if cyclic else list(range(count - 1))
+        for k in order:
+            n = (k + 1) % count
+            for i in range(steps):
+                t = i / steps
+                w = bezier_weights(t)
+                indices = (3 * k + 1, 3 * k + 2, 3 * n, 3 * n + 1)
+                weights.append([[indices[j], round(w[j], 9)] for j in range(4) if w[j] != 0])
+                radius.append(knots[k].radius + (knots[n].radius - knots[k].radius) * t)
+        if not cyclic and count:
+            weights.append([[3 * (count - 1) + 1, 1.0]])
+            radius.append(knots[count - 1].radius)
+    elif spline.type == 'POLY':
+        for index, point in enumerate(spline.points):
+            controls.append(list(point.co.xyz * scale))
+            weights.append([[index, 1.0]])
+            radius.append(point.radius)
+    else:
+        ev = obj.evaluated_get(deps)
+        mesh = ev.to_mesh()
+        try:
+            for index, vertex in enumerate(mesh.vertices):
+                controls.append(list(vertex.co * scale))
+                weights.append([[index, 1.0]])
+                radius.append(1.0)
+        finally:
+            ev.to_mesh_clear()
+    for control in controls:
+        control[:] = [round(v, 9) for v in control]
+    hooks = []
+    if spline.type in {'BEZIER', 'POLY'}:
+        for modifier in obj.modifiers:
+            if modifier.type != 'HOOK' or not modifier.show_viewport or modifier.object is None:
+                continue
+            target = modifier.object
+            hooks.append({"object": target.name,
+                          "bone": bone_id(target, modifier.subtarget) if modifier.subtarget and target.type == 'ARMATURE' else None,
+                          "indices": list(modifier.vertex_indices), "strength": modifier.strength,
+                          "falloff_type": modifier.falloff_type, "falloff_radius": modifier.falloff_radius * scale,
+                          "center": [round(v * scale, 9) for v in modifier.center],
+                          "matrix_inverse": matrix_values(modifier.matrix_inverse, scale)})
+    return {"type": spline.type, "cyclic": cyclic, "controls": controls, "weights": weights,
+            "radius": [round(r, 9) for r in radius], "hooks": hooks}
+
+
 def rigid_geometry(obj, deps, scale, binding):
     ev = obj.evaluated_get(deps)
     mesh = ev.to_mesh(preserve_all_data_layers=True, depsgraph=deps)
@@ -384,6 +448,53 @@ def rigid_geometry(obj, deps, scale, binding):
         ev.to_mesh_clear()
 
 
+
+
+def schedule_from_dot(text):
+    stack=[];nodes={};edges=[]
+    def quoted(line,key):
+        match=re.search(r'\b'+key+r'="((?:\\.|[^"\\])*)"',line)
+        return json.loads('"'+match.group(1)+'"') if match else ''
+    for line in text.splitlines():
+        if line.startswith('subgraph '):
+            stack.append(dict(stack[-1]) if stack else {})
+        elif line=='}' and stack:
+            stack.pop()
+        elif line.startswith('graph [') and stack:
+            label=quoted(line,'label')
+            if label.startswith('ID_REF : OB'):
+                stack[-1]['object']=label[11:].split(' (orig: ',1)[0]
+            elif label.startswith('[Bone Component] '):
+                stack[-1]['bone']=re.match(r"\[Bone Component\] '(.*)' :",label)[1]
+        elif line.startswith('"'):
+            edge=re.match(r'"(\d+)" -> "(\d+)"',line)
+            if edge:
+                edges.append((edge[1],edge[2],quoted(line,'color')=='red4',quoted(line,'id')))
+            else:
+                node=re.match(r'"(\d+)"',line);label=quoted(line,'label')
+                if node and stack and 'bone' in stack[-1] and label.startswith('BONE_'):
+                    context=stack[-1];nodes[node[1]]={'bone':context['object']+'::'+context['bone'],'op':label.split('(')[0]}
+    breaks=[]
+    for a,b,cyclic,label in edges:
+        if cyclic and a in nodes and b in nodes:
+            breaks.append({'from':nodes[a],'to':nodes[b],'relation':label})
+    return {'version':1,'cycle_breaks':breaks}
+
+
+def evaluation_schedule(deps, bone_ids):
+    import os
+    import tempfile
+    handle,path=tempfile.mkstemp(prefix="eclipse-evaluation-",suffix=".dot")
+    os.close(handle)
+    try:
+        deps.debug_relations_graphviz(filepath=path)
+        with open(path,encoding="utf-8") as stream:
+            result=schedule_from_dot(stream.read())
+        result["cycle_breaks"]=[edge for edge in result["cycle_breaks"] if edge["from"]["bone"] in bone_ids and edge["to"]["bone"] in bone_ids]
+        return result
+    finally:
+        os.remove(path)
+
 def collect_armature(context, arm_obj, scale):
     context.view_layer.update()
     deps = context.evaluated_depsgraph_get()
@@ -392,7 +503,7 @@ def collect_armature(context, arm_obj, scale):
     result = {"format": "EclipseArmature", "version": 4, "name": arm_obj.name, "scale": scale,
               "matrix_layout": "row-major-4x4", "world_axes": "+X,+Z,-Y", "bone_axes": "BLENDER_LOCAL_XYZ",
               "primary_armature": arm_obj.name, "source_blender_version": bpy.app.version_string,
-              "frame": context.scene.frame_current, "bones": [], "armatures": [], "objects": [],
+              "frame": context.scene.frame_current, "fps": context.scene.render.fps / context.scene.render.fps_base, "bones": [], "armatures": [], "objects": [],
               "drivers": [], "mesh_bindings": [], "skin_meshes": [], "rigid_meshes": [], "features": {"constraints": [], "driver_types": [], "inherit_scale": []}}
     constraints, driver_types, inherit = set(), set(), set()
     geometry_bindings = {}
@@ -479,6 +590,8 @@ def collect_armature(context, arm_obj, scale):
             "parent_bone": bone_id(obj.parent, obj.parent_bone) if obj.parent and obj.parent_bone else None,
             "properties": custom_properties(obj),
             "constraints": [serialize_constraint(c, scale) for c in obj.constraints]})
+        if obj.type == 'CURVE':
+            result["objects"][-1]["curve"] = curve_path(obj, deps, scale)
         result["drivers"].extend(serialize_drivers(obj, {"object": obj.name, "type": "OBJECT"}))
         if obj.data:
             result["drivers"].extend(serialize_drivers(obj.data, {"object": obj.name, "type": "DATA"}))
@@ -577,6 +690,7 @@ def collect_armature(context, arm_obj, scale):
             constraints.update(c.type for c in pb.constraints)
             inherit.add(bone.inherit_scale)
             result["bones"].append(entry)
+    result["evaluation_schedule"]=evaluation_schedule(deps,{b["id"] for b in result["bones"]})
     driver_types.update(d["type"] for d in result["drivers"])
     result["features"] = {"constraints": sorted(constraints), "driver_types": sorted(driver_types), "inherit_scale": sorted(inherit),
         "bendy_bones": any(b["bbone_segments"] > 1 for b in result["bones"]),

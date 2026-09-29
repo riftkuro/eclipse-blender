@@ -5,7 +5,7 @@ import math
 import queue
 import time
 from . import transforms, transport, authored, interpolation
-from .receiver import Receiver, receive_take
+from .receiver import Receiver, TakeWriter
 
 session = None
 manifest = None
@@ -26,6 +26,7 @@ playback_revision = 0
 last_live_take = None
 suspended = False
 transfers = {}
+writer = None
 
 
 def curves(owner):
@@ -212,8 +213,28 @@ def assemble(data):
     return dict(take, frames=[frame for index in range(1, parts + 1) for frame in entry['frames'][index]])
 
 
+def step_writer():
+    global writer, status
+    if not writer:
+        return
+    current = writer
+    try:
+        if not current.step(.012):
+            return
+        writer = None
+        muted = current.finish()
+        status = 'Take applied to ' + ', '.join(current.names()) + '.'
+        parts = ['%d %s' % (count, kind if count != 1 else kind[:-1]) for kind, count in muted.items() if count]
+        if parts:
+            status += ' Muted ' + ' and '.join(parts) + ' on synced bones so it plays.'
+    except Exception:
+        writer = None
+        raise
+
+
 def disconnect():
-    global session, manifest, live, job, take, status, last_pose, last_playback, last_live_take, suspended
+    global session, manifest, live, job, take, status, last_pose, last_playback, last_live_take, suspended, writer
+    writer = None
     receiver.clear()
     transfers.clear()
     session = manifest = job = take = None
@@ -224,7 +245,7 @@ def disconnect():
 
 
 def handle(path, data):
-    global session, manifest, pairs, direction, live, last_poll, take, status, last_digest, job, last_pose, last_playback, last_live_take, suspended
+    global session, manifest, pairs, direction, live, last_poll, take, status, last_digest, job, last_pose, last_playback, last_live_take, suspended, writer
     if path == '/connect':
         disconnect()
         candidate = data.get('manifest')
@@ -322,9 +343,9 @@ def handle(path, data):
         if full is None:
             return {'objects': [], 'part': data.get('part')}
         receiver.clear()
-        names = receive_take(pairs, full)
-        status = 'Received take: ' + ', '.join(names)
-        return {'objects': names}
+        writer = TakeWriter(pairs, full)
+        status = 'Applying Eclipse take…'
+        return {'objects': writer.names(), 'queued': True}
     if path == '/poll':
         wanted = data.get('mode')
         if wanted and (wanted.get('direction'), wanted.get('live')) != (direction, live):
@@ -380,6 +401,7 @@ def tick():
                 last_digest = current
                 queue_bake()
         step_bake()
+        step_writer()
         if session and live and direction == 'eclipse' and not suspended:
             receiver.advance()
     except Exception as error:

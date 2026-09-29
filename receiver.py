@@ -258,139 +258,178 @@ class Receiver:
         self.poses.clear()
 
 
-def receive_take(pairs, take):
-    frames = take.get('frames', [])
-    if not frames or len(frames) > 20001:
-        raise ValueError('invalid animation length')
-    collection = bpy.data.collections.new('Eclipse Take')
-    bpy.context.scene.collection.children.link(collection)
-    created, outputs, mapped = [], [], []
-    try:
-        for pair in pairs:
-            source = bpy.data.objects.get(pair['object'])
-            if source is None:
-                raise ValueError('paired object was removed')
-            obj = source.copy()
-            obj.data = source.data.copy()
-            obj.name = source.name + ' • Eclipse Take'
-            obj.animation_data_clear()
-            obj.data.animation_data_clear()
-            obj.parent = None
-            obj.matrix_world = source.matrix_world.copy()
-            obj.constraints.clear()
-            if obj.type == 'ARMATURE':
-                for bone in obj.pose.bones:
-                    for constraint in list(bone.constraints):
-                        bone.constraints.remove(constraint)
-            collection.objects.link(obj)
-            created.append(obj)
-            outputs.append(obj)
-            if obj.type == 'ARMATURE':
-                copies = {source: obj}
-                remaining = list(bpy.context.scene.objects)
-                progress = True
-                while progress:
-                    progress = False
-                    for original in remaining[:]:
-                        if original in copies or original in created or original.type not in {'MESH', 'EMPTY'}:
-                            continue
-                        linked = original.parent in copies or any(getattr(m, 'object', None) in copies for m in original.modifiers)
-                        linked = linked or any(getattr(c, 'target', None) in copies for c in original.constraints)
-                        if not linked:
-                            continue
-                        mesh = original.copy()
-                        mesh.name = original.name + ' - Eclipse Take'
-                        collection.objects.link(mesh)
-                        mesh.hide_set(not original.visible_get())
-                        copies[original] = mesh
-                        created.append(mesh)
-                        remaining.remove(original)
-                        progress = True
-                for original, mesh in copies.items():
-                    if original == source:
-                        continue
-                    if mesh.parent in copies:
-                        mesh.parent = copies[mesh.parent]
-                    for modifier in mesh.modifiers:
-                        if getattr(modifier, 'object', None) in copies:
-                            modifier.object = copies[modifier.object]
-                    for constraint in mesh.constraints:
-                        if getattr(constraint, 'target', None) in copies:
-                            constraint.target = copies[constraint.target]
-                    mesh.matrix_parent_inverse = original.matrix_parent_inverse.copy()
-                    mesh.matrix_basis = original.matrix_basis.copy()
-            new_pair = dict(pair, object=obj.name)
-            new_pair['tracks'] = [dict(m) for m in pair['tracks']]
-            for mapping in new_pair['tracks']:
-                if mapping['source'].startswith('@'):
-                    original = bpy.data.objects.get(mapping['source'][1:])
-                    if original is None:
-                        raise ValueError('mapped object was removed')
-                    prop = original.copy()
-                    prop.animation_data_clear()
-                    prop.constraints.clear()
-                    prop.parent = None
-                    prop.name = original.name + ' • Eclipse Take'
-                    collection.objects.link(prop)
-                    created.append(prop)
-                    mapping['source'] = '@' + prop.name
-            mapped.append(new_pair)
+class TakeWriter:
+    def __init__(self, pairs, take):
+        frames, fps = take.get('frames', []), take.get('fps', 0)
+        if not frames or len(frames) > 20001 or not isinstance(fps, (int, float)) or not 1 <= fps <= 1000:
+            raise ValueError('invalid animation length')
         scene = bpy.context.scene
-        source_fps = take['fps']
-        target_fps = scene.render.fps / scene.render.fps_base
-        for sample in frames:
-            frame = sample['frame'] / source_fps * target_fps
-            values = {v['id']: v for v in sample['rigs']}
-            for pair, obj in zip(mapped, outputs):
+        self.ratio = scene.render.fps / scene.render.fps_base / fps
+        self.frames = frames
+        self.at = 0
+        self.channels = {}
+        self.plans = []
+        self.last = 0.0
+        for pair in pairs:
+            obj = bpy.data.objects.get(pair['object'])
+            if obj is None:
+                raise ValueError('paired object was removed: ' + pair['object'])
+            plan = {'pair': pair, 'object': obj}
+            if pair['kind'] == 'rig':
+                plan['alignment'] = unpack(pair['alignment']).inverted()
+                plan['inverse'] = obj.matrix_world.inverted()
+                plan['bones'] = sorted(obj.pose.bones, key=lambda b: len(b.parent_recursive))
+                plan['by_source'] = {m['source']: m for m in pair['tracks']}
+                plan['offsets'] = {m['id']: unpack(m['offset']).inverted() for m in pair['tracks']}
+                plan['corrections'] = {b.name: correction(b.bone).inverted() for b in obj.pose.bones}
+                plan['props'] = []
+                for mapping in pair['tracks']:
+                    if mapping['source'].startswith('@'):
+                        prop = bpy.data.objects.get(mapping['source'][1:])
+                        if prop is None:
+                            raise ValueError('mapped object was removed: ' + mapping['source'][1:])
+                        plan['props'].append((mapping, prop))
+            self.plans.append(plan)
+
+    def names(self):
+        return [plan['object'].name for plan in self.plans]
+
+    def channel(self, owner, path, index, group, frame, value):
+        key = (owner.as_pointer(), path, index)
+        entry = self.channels.get(key)
+        if entry is None:
+            entry = self.channels[key] = {'owner': owner, 'path': path, 'index': index, 'group': group, 'keys': []}
+        entry['keys'].append((frame, value))
+
+    def rotation(self, owner, group, frame, quat, previous):
+        mode = owner.rotation_mode
+        if mode in {'QUATERNION', 'AXIS_ANGLE'}:
+            if previous is not None and quat.dot(previous) < 0:
+                quat.negate()
+            if mode == 'AXIS_ANGLE':
+                axis, angle = quat.to_axis_angle()
+                for i, v in enumerate((angle, axis.x, axis.y, axis.z)):
+                    self.channel(owner, 'rotation_axis_angle', i, group, frame, v)
+            else:
+                for i, v in enumerate(quat):
+                    self.channel(owner, 'rotation_quaternion', i, group, frame, v)
+            return quat
+        euler = quat.to_euler(mode, previous) if previous is not None else quat.to_euler(mode)
+        for i, v in enumerate(euler):
+            self.channel(owner, 'rotation_euler', i, group, frame, v)
+        return euler
+
+    def transform(self, owner, group, frame, basis, state):
+        loc, rot, scale = basis.decompose()
+        for i, v in enumerate(loc):
+            self.channel(owner, 'location', i, group, frame, v)
+        for i, v in enumerate(scale):
+            self.channel(owner, 'scale', i, group, frame, v)
+        state[owner.as_pointer()] = self.rotation(owner, group, frame, rot, state.get(owner.as_pointer()))
+
+    def object_basis(self, obj, world):
+        if obj.parent is None:
+            return world
+        return (obj.parent.matrix_world @ obj.matrix_parent_inverse).inverted() @ world
+
+    def step(self, budget):
+        started = time.monotonic()
+        state = getattr(self, 'state', None) or {}
+        self.state = state
+        while self.at < len(self.frames):
+            sample = self.frames[self.at]
+            self.at += 1
+            number = sample.get('frame')
+            if not isinstance(number, (int, float)) or not math.isfinite(number):
+                raise ValueError('invalid Eclipse keyframe order')
+            frame = number * self.ratio
+            self.last = max(self.last, frame)
+            values = {v['id']: v for v in sample.get('rigs', [])}
+            for plan in self.plans:
+                pair, obj = plan['pair'], plan['object']
                 row = values.get(pair['rig'])
                 if not row:
                     continue
                 if pair['kind'] == 'camera':
-                    obj.matrix_world = restored(unpack(row['camera']), pair['units'])
-                    obj.rotation_mode = 'QUATERNION'
-                    obj.keyframe_insert('location', frame=frame)
-                    obj.keyframe_insert('rotation_quaternion', frame=frame)
-                    set_camera_fov(obj, row['fov'])
-                    obj.data.keyframe_insert('lens', frame=frame)
+                    world = restored(unpack(row['camera']), pair['units'])
+                    self.transform(obj, 'Object Transforms', frame, self.object_basis(obj, world), state)
+                    fov = row.get('fov')
+                    if isinstance(fov, (int, float)) and 1 <= fov <= 120:
+                        self.channel(obj.data, 'lens', 0, 'Camera', frame, obj.data.sensor_height / (2 * math.tan(math.radians(fov) / 2)))
                     continue
-                tracks = {v['id']: v for v in row['tracks']}
-                alignment = unpack(pair['alignment']).inverted()
-                by_source = {m['source']: m for m in pair['tracks']}
-                for mapping in pair['tracks']:
-                    if not mapping['source'].startswith('@') or mapping['id'] not in tracks:
-                        continue
-                    prop = bpy.data.objects[mapping['source'][1:]]
+                tracks = {v['id']: v for v in row.get('tracks', [])}
+                def world_of(mapping):
                     value = tracks[mapping['id']]
-                    world = restored(alignment @ unpack(value['world']) @ unpack(mapping['offset']).inverted(), pair['units'])
+                    world = restored(plan['alignment'] @ unpack(value['world']) @ plan['offsets'][mapping['id']], pair['units'])
                     scale, base = value.get('scale', [1, 1, 1]), mapping.get('rest_scale', [1, 1, 1])
-                    prop.matrix_world = world @ Matrix.Diagonal(tuple(scale[i] * base[i] for i in range(3)) + (1,))
-                    prop.rotation_mode = 'QUATERNION'
-                    for channel in ('location', 'rotation_quaternion', 'scale'):
-                        prop.keyframe_insert(channel, frame=frame)
-                bones = sorted(obj.pose.bones, key=lambda b: len(b.parent_recursive))
-                for bone in bones:
-                    mapping = by_source.get(bone.name)
-                    if not mapping or mapping['id'] not in tracks:
-                        continue
-                    world = restored(alignment @ unpack(tracks[mapping['id']]['world']) @ unpack(mapping['offset']).inverted(), pair['units'])
-                    scale = tracks[mapping['id']].get('scale', [1, 1, 1])
-                    base = mapping.get('rest_scale', [1, 1, 1])
-                    world = world @ Matrix.Diagonal(tuple(scale[i] * base[i] for i in range(3)) + (1,))
-                    bone.matrix = obj.matrix_world.inverted() @ world @ correction(bone.bone).inverted()
-                    bone.rotation_mode = 'QUATERNION'
-                    bone.keyframe_insert('location', frame=frame)
-                    bone.keyframe_insert('rotation_quaternion', frame=frame)
-                    bone.keyframe_insert('scale', frame=frame)
-                    bpy.context.view_layer.update()
-        from .engine import curves
-        for obj in created:
-            for owner in (obj, obj.data):
-                for curve in curves(owner):
-                    for key in curve.keyframe_points:
-                        key.interpolation = 'LINEAR'
-        return [o.name for o in created]
-    except Exception:
-        for obj in created:
-            bpy.data.objects.remove(obj, do_unlink=True)
-        bpy.data.collections.remove(collection)
-        raise
+                    return world @ Matrix.Diagonal(tuple(scale[i] * base[i] for i in range(3)) + (1,))
+                for mapping, prop in plan['props']:
+                    if mapping['id'] in tracks:
+                        self.transform(prop, 'Object Transforms', frame, self.object_basis(prop, world_of(mapping)), state)
+                poses = {}
+                for bone in plan['bones']:
+                    rest = bone.bone
+                    parent = bone.parent
+                    extra = {} if parent is None else {'parent_matrix': poses[parent.name], 'parent_matrix_local': parent.bone.matrix_local}
+                    mapping = plan['by_source'].get(bone.name)
+                    if mapping and mapping['id'] in tracks:
+                        pose = plan['inverse'] @ world_of(mapping) @ plan['corrections'][bone.name]
+                        basis = rest.convert_local_to_pose(pose, rest.matrix_local, invert=True, **extra)
+                        poses[bone.name] = pose
+                        self.transform(bone, bone.name, frame, basis, state)
+                    else:
+                        poses[bone.name] = rest.convert_local_to_pose(bone.matrix_basis, rest.matrix_local, **extra)
+            if time.monotonic() - started > budget:
+                return False
+        return True
+
+    def finish(self):
+        owners = {}
+        for entry in self.channels.values():
+            owner = entry['owner']
+            holder = owner.id_data
+            owners.setdefault(holder.as_pointer(), (holder, []))[1].append(entry)
+        muted = {'constraints': 0, 'drivers': 0}
+        for holder, entries in owners.values():
+            animation = holder.animation_data_create()
+            previous = animation.action
+            if previous is not None and not previous.get('eclipse_take'):
+                previous.use_fake_user = True
+            action = bpy.data.actions.new(holder.name + ' • Eclipse Take')
+            action['eclipse_take'] = True
+            animation.action = action
+            layered = hasattr(action, 'fcurve_ensure_for_datablock')
+            for entry in entries:
+                owner = entry['owner']
+                path = owner.path_from_id(entry['path']) if owner != holder else entry['path']
+                if layered:
+                    try:
+                        curve = action.fcurve_ensure_for_datablock(holder, path, index=entry['index'], group_name=entry['group'])
+                    except TypeError:
+                        curve = action.fcurve_ensure_for_datablock(holder, path, index=entry['index'])
+                else:
+                    curve = action.fcurves.new(path, index=entry['index'], action_group=entry['group'])
+                keys = entry['keys']
+                points = curve.keyframe_points
+                points.add(len(keys))
+                points.foreach_set('co', [v for key in keys for v in key])
+                points.foreach_set('interpolation', [bpy.types.Keyframe.bl_rna.properties['interpolation'].enum_items['LINEAR'].value] * len(keys))
+                curve.update()
+            if isinstance(holder, bpy.types.Camera):
+                holder.sensor_fit = 'VERTICAL'
+            if isinstance(holder, bpy.types.Object) and holder.type == 'ARMATURE':
+                keyed = {entry['owner'].name for entry in entries if isinstance(entry['owner'], bpy.types.PoseBone)}
+                for name in keyed:
+                    for constraint in holder.pose.bones[name].constraints:
+                        if not constraint.mute:
+                            constraint.mute = True
+                            muted['constraints'] += 1
+                for driver in holder.animation_data.drivers:
+                    for name in keyed:
+                        if driver.data_path.startswith('pose.bones["%s"].' % name) and driver.data_path.rsplit('.', 1)[-1] in {'location', 'rotation_quaternion', 'rotation_euler', 'rotation_axis_angle', 'scale'} and not driver.mute:
+                            driver.mute = True
+                            muted['drivers'] += 1
+        scene = bpy.context.scene
+        scene.frame_end = max(scene.frame_end, math.ceil(self.last))
+        bpy.context.view_layer.update()
+        return muted
