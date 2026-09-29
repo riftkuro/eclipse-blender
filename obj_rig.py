@@ -4,6 +4,7 @@ import math
 import re
 from mathutils import Matrix, Vector, kdtree
 from .transforms import unpack, restored, set_camera_fov
+from .rig_appearance import restore_appearance
 
 
 def import_rig(filepath):
@@ -91,9 +92,39 @@ def import_rig(filepath):
                     data.bones[name]['eclipse_track_id'] = key
                     if key in pivots:
                         data.bones[name]['eclipse_pivot'] = pivots[key]
+            face_atlas = None
+            if rig.get('meshGroup'):
+                for candidate in imported:
+                    if not re.match(re.escape(rig['meshGroup']) + r'(?=\d|\.|$)', candidate.name, re.I):
+                        continue
+                    for mat in candidate.data.materials:
+                        if not mat or not mat.use_nodes:
+                            continue
+                        bsdf = mat.node_tree.nodes.get('Principled BSDF')
+                        for link in bsdf.inputs['Base Color'].links if bsdf else []:
+                            node = link.from_node
+                            if node.type == 'TEX_IMAGE' and node.image and tuple(node.image.size) == (1024, 512):
+                                face_atlas = node.image
+            assigned = set()
             for part in rig['parts']:
                 meshes = [mesh for mesh in imported if re.match(re.escape(part['token']), mesh.name, re.I)]
+                if part.get('meshGroup'):
+                    # Roblox combines humanoid groups under the model name. Match each
+                    # rendered body mesh by its authored rest-position bounds, once only.
+                    candidates = [m for m in imported if m not in assigned and re.match(re.escape(part['meshGroup']) + r'(?=\d|\.|$)', m.name, re.I)]
+                    expected = restored(unpack(part['matrix'])).translation
+                    def score(m):
+                        points = [m.matrix_world @ Vector(c) for c in m.bound_box]
+                        center = (Vector(tuple(min(v[i] for v in points) for i in range(3))) + Vector(tuple(max(v[i] for v in points) for i in range(3)))) * .5
+                        return (center - expected).length_squared
+                    if not candidates:
+                        raise ValueError('Missing rendered character geometry: ' + part['name'])
+                    meshes = [min(candidates, key=score)]
+                if not meshes:
+                    raise ValueError('Missing exported geometry: ' + part['name'] + '. Re-export the fully loaded rig from Eclipse.')
                 for mesh in meshes:
+                    assigned.add(mesh)
+                    restore_appearance(mesh, part, filepath, face_atlas)
                     mesh.name = part['name']
                     if existing:
                         mesh.matrix_world = obj.matrix_world @ restored(unpack(rig['origin'])).inverted() @ mesh.matrix_world
@@ -135,6 +166,9 @@ def import_rig(filepath):
             obj.select_set(True)
         if outputs:
             bpy.context.view_layer.objects.active = outputs[0]
+        # Imported materials/textures are invisible in Blender's default solid view.
+        if bpy.context.area and bpy.context.area.type == 'VIEW_3D':
+            bpy.context.area.spaces.active.shading.type = 'MATERIAL'
         return outputs
     except Exception:
         if bpy.context.object and bpy.context.object.mode != 'OBJECT':
