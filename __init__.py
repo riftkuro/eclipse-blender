@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'Eclipse',
     'author': 'riftkuro',
-    'version': (1, 5, 3),
+    'version': (1, 5, 5),
     'blender': (4, 2, 0),
     'location': 'View3D > Sidebar > Eclipse',
     'description': 'Sync rigs, custom output bones and cameras with an Eclipse animation file, and export armatures to Eclipse',
@@ -56,8 +56,12 @@ class ECLIPSE_OT_import_rig(bpy.types.Operator, ImportHelper):
     def execute(self, context):
         try:
             from .obj_rig import import_rig
+            from .rig_appearance import missing_textures
             outputs = import_rig(self.filepath)
             engine.status = 'Imported ' + ', '.join(obj.name for obj in outputs)
+            if missing_textures:
+                count = len(set(missing_textures))
+                self.report({'WARNING'}, f'Studio left out {count} texture file{"s" if count != 1 else ""}. Those surfaces use their Roblox color instead.')
         except Exception as error:
             self.report({'ERROR'}, str(error))
             return {'CANCELLED'}

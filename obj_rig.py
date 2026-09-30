@@ -4,7 +4,7 @@ import math
 import re
 from mathutils import Matrix, Vector, kdtree
 from .transforms import unpack, restored, set_camera_fov
-from .rig_appearance import restore_appearance
+from .rig_appearance import restore_appearance, missing_textures
 
 
 def import_rig(filepath):
@@ -15,6 +15,7 @@ def import_rig(filepath):
     if old_mode != 'OBJECT':
         bpy.ops.object.mode_set(mode='OBJECT')
     created = []
+    missing_textures.clear()
     try:
         bpy.ops.wm.obj_import(filepath=filepath, use_split_objects=True, use_split_groups=True,
                               forward_axis='NEGATIVE_Z', up_axis='Y')

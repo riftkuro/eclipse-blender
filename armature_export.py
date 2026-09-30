@@ -1,4 +1,5 @@
 import bpy
+from contextlib import contextmanager
 import json
 import math
 import re
@@ -701,6 +702,55 @@ def collect_armature(context, arm_obj, scale):
     return result
 
 
+@contextmanager
+def rest_pose(context):
+    saved = []
+    for obj in context.scene.objects:
+        if obj.type != 'ARMATURE':
+            continue
+        entry = {"obj": obj, "bones": []}
+        ad = obj.animation_data
+        if ad:
+            entry["action"] = ad.action
+            entry["slot"] = getattr(ad, "action_slot", None)
+            entry["nla"] = ad.use_nla
+            ad.action = None
+            ad.use_nla = False
+        for pb in obj.pose.bones:
+            entry["bones"].append((pb, pb.location.copy(), pb.rotation_quaternion.copy(), pb.rotation_euler.copy(),
+                                   tuple(pb.rotation_axis_angle), pb.scale.copy()))
+            pb.location = (0.0, 0.0, 0.0)
+            pb.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+            pb.rotation_euler = (0.0, 0.0, 0.0)
+            pb.rotation_axis_angle = (0.0, 0.0, 1.0, 0.0)
+            pb.scale = (1.0, 1.0, 1.0)
+        saved.append(entry)
+    context.view_layer.update()
+    try:
+        yield
+    finally:
+        for entry in saved:
+            obj = entry["obj"]
+            ad = obj.animation_data
+            if ad and "action" in entry:
+                ad.use_nla = entry["nla"]
+                ad.action = entry["action"]
+                if entry["slot"] is not None and hasattr(ad, "action_slot"):
+                    try:
+                        ad.action_slot = entry["slot"]
+                    except Exception:
+                        pass
+        context.view_layer.update()
+        for entry in saved:
+            for pb, loc, quat, eul, axis, scl in entry["bones"]:
+                pb.location = loc
+                pb.rotation_quaternion = quat
+                pb.rotation_euler = eul
+                pb.rotation_axis_angle = axis
+                pb.scale = scl
+        context.view_layer.update()
+
+
 class ECLIPSE_OT_export_armature(bpy.types.Operator, ExportHelper):
     bl_idname = "eclipse.export_armature"
     bl_label = "Export Armature (.json)"
@@ -740,7 +790,8 @@ class ECLIPSE_OT_export_armature(bpy.types.Operator, ExportHelper):
         if arm is None:
             self.report({'ERROR'}, "Select an armature first")
             return {'CANCELLED'}
-        data = collect_armature(context, arm, self.scale)
+        with rest_pose(context):
+            data = collect_armature(context, arm, self.scale)
         with open(self.filepath, "w", encoding="utf-8") as f:
             json.dump(data, f, separators=(",", ":"))
         nhidden = sum(1 for b in data["bones"] if b.get("hidden"))

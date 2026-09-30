@@ -6,6 +6,7 @@ from mathutils import Vector
 from .transforms import restored, unpack
 
 ASSETS = Path(__file__).with_name('assets')
+missing_textures = []
 
 
 def solid_material(name, color, opacity=1):
@@ -27,12 +28,20 @@ def restore_appearance(obj, part, filepath, face_atlas=None):
         # Current exports contain Studio's actual rendered surface, custom meshes,
         # avatar clothing and decals. Never replace them with a template head or
         # a solid-color material. The paths/UVs are authored by the native exporter.
+        fallback = [max(0, min(1, c)) ** 2.2 for c in appearance.get('color', [.64, .64, .64])]
         for mat in obj.data.materials:
             if mat and mat.use_nodes:
-                for node in mat.node_tree.nodes:
+                for node in list(mat.node_tree.nodes):
                     if node.type == 'TEX_IMAGE' and node.image:
                         if not node.image.has_data:
-                            raise ValueError('Missing exported texture: ' + node.image.filepath)
+                            missing_textures.append(Path(node.image.filepath).name or node.image.name)
+                            for output in node.outputs:
+                                for link in list(output.links):
+                                    target = link.to_socket
+                                    mat.node_tree.links.remove(link)
+                                    if target.name == 'Base Color' and hasattr(target, 'default_value'):
+                                        target.default_value = (*fallback, 1)
+                            continue
                         if not node.image.packed_file:
                             node.image.pack()
         return
