@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'Eclipse',
     'author': 'riftkuro',
-    'version': (1, 5, 5),
+    'version': (1, 5, 6),
     'blender': (4, 2, 0),
     'location': 'View3D > Sidebar > Eclipse',
     'description': 'Sync rigs, custom output bones and cameras with an Eclipse animation file, and export armatures to Eclipse',

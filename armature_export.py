@@ -710,12 +710,19 @@ def rest_pose(context):
             continue
         entry = {"obj": obj, "bones": []}
         ad = obj.animation_data
-        if ad:
-            entry["action"] = ad.action
-            entry["slot"] = getattr(ad, "action_slot", None)
-            entry["nla"] = ad.use_nla
-            ad.action = None
-            ad.use_nla = False
+        if ad and not getattr(ad, "use_tweak_mode", False):
+            action, slot, nla = ad.action, getattr(ad, "action_slot", None), ad.use_nla
+            try:
+                ad.action = None
+                ad.use_nla = False
+                entry["action"], entry["slot"], entry["nla"] = action, slot, nla
+            except (AttributeError, RuntimeError, TypeError):
+                try:
+                    if ad.action is None and action is not None:
+                        ad.action = action
+                    ad.use_nla = nla
+                except (AttributeError, RuntimeError, TypeError):
+                    pass
         for pb in obj.pose.bones:
             entry["bones"].append((pb, pb.location.copy(), pb.rotation_quaternion.copy(), pb.rotation_euler.copy(),
                                    tuple(pb.rotation_axis_angle), pb.scale.copy()))
@@ -733,8 +740,11 @@ def rest_pose(context):
             obj = entry["obj"]
             ad = obj.animation_data
             if ad and "action" in entry:
-                ad.use_nla = entry["nla"]
-                ad.action = entry["action"]
+                try:
+                    ad.use_nla = entry["nla"]
+                    ad.action = entry["action"]
+                except (AttributeError, RuntimeError, TypeError):
+                    pass
                 if entry["slot"] is not None and hasattr(ad, "action_slot"):
                     try:
                         ad.action_slot = entry["slot"]
