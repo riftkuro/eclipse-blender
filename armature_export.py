@@ -168,6 +168,19 @@ def color_to_list(c):
     return [round(c[0], 4), round(c[1], 4), round(c[2], 4)]
 
 
+def export_bone_collections(arm_obj):
+    """Keep names, hierarchy and overlapping membership in the portable JSON."""
+    all_collections = getattr(arm_obj.data, "collections_all", None)
+    if all_collections is None:
+        all_collections = arm_obj.data.collections
+    return [{"id": collection.name, "name": collection.name,
+             "parent": collection.parent.name if getattr(collection, "parent", None) else None,
+             "visible": bool(collection.is_visible_effectively),
+             "visible_self": bool(collection.is_visible),
+             "solo": bool(getattr(collection, "is_solo", False))}
+            for collection in all_collections]
+
+
 def bone_collection_hidden(pbone):
     cols = pbone.bone.collections
     return bool(cols) and not any(c.is_visible_effectively for c in cols)
@@ -600,6 +613,7 @@ def collect_armature(context, arm_obj, scale):
         ev = obj.evaluated_get(deps)
         result["armatures"].append({"name": obj.name, "matrix": matrix_values(ev.matrix_world, scale, True),
             "pose_position": obj.data.pose_position, "display_type": obj.data.display_type,
+            "bone_collections": export_bone_collections(obj),
             "show_in_front": obj.show_in_front, "properties": custom_properties(obj.data)})
         for pbone in obj.pose.bones:
             pb = ev.pose.bones[pbone.name]
@@ -623,6 +637,7 @@ def collect_armature(context, arm_obj, scale):
                 "lock_scale": list(pbone.lock_scale), "color": normal, "select": selected, "active": active,
                 "solid": False, "hidden": bone_hidden(obj, pbone), "hide_select": bool(bone.hide_select), "deform": bone.use_deform,
                 "visibility": {"bone_hidden": bool(bone.hide), "collection_hidden": bone_collection_hidden(pbone)},
+                "collections": [collection.name for collection in bone.collections],
                 "skinning": bone_id(obj, pbone.name) in skinning,
                 "geometry_binding": bone_id(obj, pbone.name) in geometry_bindings,
                 "bound_meshes": geometry_bindings.get(bone_id(obj, pbone.name), []),
