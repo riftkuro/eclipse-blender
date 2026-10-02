@@ -165,7 +165,8 @@ def automatic(rig, objects, occupied=()):
             continue
         if rig['kind'] == 'camera':
             if obj.type == 'CAMERA':
-                candidates.append((100 + 10 * (normalized(obj.name) == normalized(rig['name'])), obj))
+                score = 1000 if obj.get('eclipse_camera_reference') == 'Camera_Rig.blend' else 100 + 10 * (normalized(obj.name) == normalized(rig['name']))
+                candidates.append((score, obj))
             continue
         if obj.type != 'ARMATURE':
             continue

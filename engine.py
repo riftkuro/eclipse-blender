@@ -295,7 +295,7 @@ def handle(path, data):
         pairs.append(pair)
         persist()
         take = job = None
-        status = 'Paired ' + obj.name
+        status = 'Paired ' + pair['object']
         scale = pair.get('fit', {}).get('scale', 1)
         if pair['kind'] == 'rig' and abs(scale - 1) > .15:
             status += ' · rig looks %.2gx the Eclipse size, check Studs/unit' % scale

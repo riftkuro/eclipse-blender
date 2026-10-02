@@ -2,6 +2,21 @@ from pathlib import Path
 import bpy
 
 
+def camera_output(obj):
+    if obj.type == 'CAMERA':
+        return obj
+    if obj.type != 'ARMATURE':
+        raise ValueError('Choose a Blender camera or its camera control armature.')
+    from .authored import dependencies
+    cameras = [candidate for candidate in bpy.context.scene.objects
+               if candidate.type == 'CAMERA' and obj in dependencies(candidate)]
+    if not cameras:
+        raise ValueError('This armature has no camera output. Choose the camera object used for rendering.')
+    if len(cameras) != 1:
+        raise ValueError('This armature drives more than one camera. Choose the camera object to import.')
+    return cameras[0]
+
+
 def append_camera_rig():
     scene = bpy.context.scene
     existing = next((obj for obj in scene.objects if obj.type == 'CAMERA' and obj.get('eclipse_camera_reference') == 'Camera_Rig.blend'), None)

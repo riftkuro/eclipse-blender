@@ -76,8 +76,8 @@ def source_frame(obj, source, depsgraph=None, rest=False):
 def bind(obj, rig, supplied=None, units=1.0):
     supplied = supplied or {}
     if rig['kind'] == 'camera':
-        if obj.type != 'CAMERA':
-            raise ValueError('pair camera tracks with a Blender camera object')
+        from .camera_rig import camera_output
+        obj = camera_output(obj)
         return {'rig': rig['id'], 'object': obj.name, 'kind': 'camera', 'units': units, 'tracks': []}
     if obj.type != 'ARMATURE':
         raise ValueError('pair rig tracks with the output armature')
