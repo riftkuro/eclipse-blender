@@ -120,11 +120,14 @@ def persist():
 
 
 def queue_bake(manual=False):
-    global job, status
+    global job, status, last_digest
     if not pairs:
         raise ValueError('pair at least one rig or camera first')
     if not session or not manifest:
         raise ValueError('Connect from an Eclipse file first')
+    if job and job['session'] == session:
+        job['manual'] = job.get('manual', False) or manual
+        return
     manual = manual or bool(job and job.get('manual'))
     scene = bpy.context.scene
     fps = manifest['fps']
@@ -137,7 +140,8 @@ def queue_bake(manual=False):
     job = {'session': session, 'frames': [], 'at': 0, 'samples': samples, 'keys': keys,
            'positions': at, 'jumps': jumps, 'fps': fps, 'source_fps': blender_fps,
            'pairs': json.loads(json.dumps(pairs)), 'manual': manual}
-    status = 'Sampling animation…'
+    last_digest = digest()
+    status = 'Sampling animation: 0 / %d samples' % len(samples)
 
 
 def step_bake():
@@ -161,6 +165,7 @@ def step_bake():
             current['at'] += 1
             if time.monotonic() - started > .012:
                 break
+        status = 'Sampling animation: %d / %d samples' % (current['at'], len(current['samples']))
         if current['at'] == len(current['samples']):
             if 'refine' not in current:
                 current['refine'] = [(a, b, 0) for a, b in zip(current['frames'], current['frames'][1:]) if not b['boundary']]
@@ -177,9 +182,11 @@ def step_bake():
                         current['refine'].extend([(left, middle, depth + 1), (middle, right, depth + 1)])
                 if len(current['frames']) * sum(max(1, len(p['tracks'])) for p in current['pairs']) > 1000000:
                     raise ValueError('shorten the animation range before syncing this take')
+                status = 'Refining animation: %d samples, %d intervals remaining' % (len(current['frames']), len(current['refine']))
                 if time.monotonic() - started > .012:
                     return
             current['frames'].sort(key=lambda f: f['frame'])
+            status = 'Preparing animation curves (%d samples)…' % len(current['frames'])
             current['curves'] = interpolation.collect(current['pairs'], current['positions'], [f['frame'] for f in current['frames']], current['fps'] / current['source_fps'])
             revision += 1
             take = {'revision': revision, 'fps': current['fps'], 'frames': current['frames'], 'keys': current['keys'], 'session': session, 'baked': False, 'curves': current['curves'], 'manual': current['manual']}
@@ -394,7 +401,7 @@ def tick():
         suspended = True
         status = 'Waiting for Eclipse; connection will resume automatically'
     try:
-        if session and live and direction == 'blender' and time.monotonic() >= next_digest:
+        if session and live and direction == 'blender' and job is None and time.monotonic() >= next_digest:
             next_digest = time.monotonic() + .5
             current = digest()
             if current != last_digest:
