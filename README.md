@@ -1,4 +1,4 @@
-# Eclipse Blender 1.5.8
+# Eclipse Blender 1.5.9
 
 Blender companion for Eclipse Animator. 
 
