@@ -61,6 +61,9 @@ def object_dependencies(obj):
         owners.extend(obj.pose.bones)
     for owner in owners:
         for con in owner.constraints:
+            for target in getattr(con, "targets", ()):
+                if isinstance(target.target, bpy.types.Object):
+                    result.add(target.target)
             for prop in con.bl_rna.properties:
                 if prop.type == 'POINTER':
                     value = getattr(con, prop.identifier, None)
@@ -101,6 +104,13 @@ def connected_objects(context, arm_obj):
 
 def serialize_constraint(con, scale):
     result = rna_properties(con)
+    if con.type == 'ARMATURE':
+        result["targets"] = []
+        for target in con.targets:
+            item = rna_properties(target)
+            obj, name = target.target, target.subtarget
+            item["target_id"] = bone_id(obj, name) if obj and obj.type == 'ARMATURE' and name else None
+            result["targets"].append(item)
     for prop, subtarget, output in (("target", "subtarget", "target_id"), ("pole_target", "pole_subtarget", "pole_target_id"), ("space_object", "space_subtarget", "space_target_id")):
         obj, name = getattr(con, prop, None), getattr(con, subtarget, "")
         if obj is not None:
