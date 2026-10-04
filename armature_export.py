@@ -691,7 +691,7 @@ def collect_armature(context, arm_obj, scale):
                         mesh.calc_loop_triangles()
                         entry["display"]["triangles"] = [list(triangle.vertices) for triangle in mesh.loop_triangles]
                         world = custom_shape_world_matrix(ev, pb)
-                        if mesh.polygons:
+                        if mesh.polygons and not bone.show_wire:
                             entry["solid"] = True
                             entry["tris"] = [[to_roblox(a, scale), to_roblox(b, scale), to_roblox(c, scale)] for a, b, c in shape_tris(world, mesh)]
                         entry["edges"] = [[to_roblox(a, scale), to_roblox(b, scale)] for a, b in shape_edges(world, mesh)]
