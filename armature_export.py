@@ -271,6 +271,23 @@ def custom_shape_world_matrix(arm_obj, pbone):
     return bone_mat @ local
 
 
+def planar_widget(vertices):
+    if len(vertices) < 4:
+        return True
+    origin = vertices[0]
+    offsets = [v - origin for v in vertices]
+    axis = max(offsets, key=lambda v: v.length_squared)
+    extent = axis.length
+    if extent == 0:
+        return True
+    normal = max((axis.cross(v) for v in offsets), key=lambda v: v.length_squared)
+    if normal.length <= extent * extent * 1e-7:
+        return True
+    normal.normalize()
+    tolerance = max(extent * 1e-6, max(abs(c) for v in vertices for c in v) * 2**-22)
+    return all(abs(normal.dot(v)) <= tolerance for v in offsets)
+
+
 def shape_edges(world, mesh):
     verts = [world @ v.co for v in mesh.vertices]
     edge_keys = [tuple(e.vertices) for e in mesh.edges]
@@ -691,7 +708,10 @@ def collect_armature(context, arm_obj, scale):
                         mesh.calc_loop_triangles()
                         entry["display"]["triangles"] = [list(triangle.vertices) for triangle in mesh.loop_triangles]
                         world = custom_shape_world_matrix(ev, pb)
-                        if mesh.polygons and not bone.show_wire:
+                        planar = planar_widget([vertex.co for vertex in mesh.vertices])
+                        if planar:
+                            entry["display"]["triangles"] = []
+                        if mesh.polygons and not bone.show_wire and not planar:
                             entry["solid"] = True
                             entry["tris"] = [[to_roblox(a, scale), to_roblox(b, scale), to_roblox(c, scale)] for a, b, c in shape_tris(world, mesh)]
                         entry["edges"] = [[to_roblox(a, scale), to_roblox(b, scale)] for a, b in shape_edges(world, mesh)]
