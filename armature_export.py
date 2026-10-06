@@ -1,4 +1,5 @@
 import bpy
+import sys
 from contextlib import contextmanager
 import json
 import math
@@ -69,7 +70,7 @@ def object_dependencies(obj):
                     value = getattr(con, prop.identifier, None)
                     if isinstance(value, bpy.types.Object):
                         result.add(value)
-    for owner in (obj, obj.data):
+    for owner in (obj, obj.data, getattr(obj.data, "shape_keys", None)):
         anim = getattr(owner, "animation_data", None)
         if anim:
             for curve in anim.drivers:
@@ -272,6 +273,7 @@ def custom_shape_world_matrix(arm_obj, pbone):
 
 
 def planar_widget(vertices):
+    """Flat custom widgets are outlines in Blender even with show_wire disabled."""
     if len(vertices) < 4:
         return True
     origin = vertices[0]
@@ -466,6 +468,33 @@ def curve_path(obj, deps, scale):
             "radius": [round(r, 9) for r in radius], "hooks": hooks}
 
 
+def relative_shape_keys(obj, scale):
+    keys = obj.data.shape_keys
+    if not keys:
+        return []
+    if not keys.use_relative:
+        raise ValueError(f"Absolute shape keys on {obj.name} require conversion to relative keys")
+    driven = {f.data_path for f in keys.animation_data.drivers} if keys.animation_data else set()
+    result = []
+    for key in keys.key_blocks:
+        if key == keys.reference_key or (key.value == 0 and key.path_from_id("value") not in driven):
+            continue
+        group = obj.vertex_groups.get(key.vertex_group) if key.vertex_group else None
+        deltas = []
+        for index, (vertex, relative) in enumerate(zip(key.data, key.relative_key.data)):
+            weight = 1.0
+            if key.vertex_group:
+                weight = next((assignment.weight for assignment in obj.data.vertices[index].groups
+                               if group and assignment.group == group.index), 0.0)
+            delta = (vertex.co - relative.co) * (scale * weight)
+            if delta.length_squared > 1e-20:
+                deltas.append([index] + [round(v, 9) for v in delta])
+        result.append({"name": key.name, "value": float(key.value),
+            "min": float(key.slider_min), "max": float(key.slider_max),
+            "mute": bool(key.mute), "deltas": deltas})
+    return result
+
+
 def rigid_geometry(obj, deps, scale, binding):
     ev = obj.evaluated_get(deps)
     mesh = ev.to_mesh(preserve_all_data_layers=True, depsgraph=deps)
@@ -544,6 +573,7 @@ def collect_armature(context, arm_obj, scale):
     result = {"format": "EclipseArmature", "version": 4, "name": arm_obj.name, "scale": scale,
               "matrix_layout": "row-major-4x4", "world_axes": "+X,+Z,-Y", "bone_axes": "BLENDER_LOCAL_XYZ",
               "primary_armature": arm_obj.name, "source_blender_version": bpy.app.version_string,
+              "source_eclipse_version": "1.5.11", "features": ["relative_shape_keys"],
               "frame": context.scene.frame_current, "fps": context.scene.render.fps / context.scene.render.fps_base, "bones": [], "armatures": [], "objects": [],
               "drivers": [], "mesh_bindings": [], "skin_meshes": [], "rigid_meshes": [], "features": {"constraints": [], "driver_types": [], "inherit_scale": []}}
     constraints, driver_types, inherit = set(), set(), set()
@@ -592,6 +622,7 @@ def collect_armature(context, arm_obj, scale):
                     "matrix": matrix_values(obj.matrix_world, scale, True),
                     "modifier": rna_properties(modifier), "vertices": vertices, "faces": faces,
                     "normal_topology": normal_topology(mesh),
+                    "shape_keys": relative_shape_keys(obj, scale),
                     "materials": [slot.material.name if slot.material else None for slot in obj.material_slots]})
                 for group in obj.vertex_groups:
                     if group.index in weighted_groups and group.name in target.pose.bones:
@@ -636,6 +667,13 @@ def collect_armature(context, arm_obj, scale):
         result["drivers"].extend(serialize_drivers(obj, {"object": obj.name, "type": "OBJECT"}))
         if obj.data:
             result["drivers"].extend(serialize_drivers(obj.data, {"object": obj.name, "type": "DATA"}))
+            keys = getattr(obj.data, "shape_keys", None)
+            if keys:
+                paths = {key.path_from_id("value"): key.name for key in keys.key_blocks}
+                for driver in serialize_drivers(keys, {"object": obj.name, "type": "SHAPE_KEYS"}):
+                    driver["shape_key"] = paths.get(driver["data_path"])
+                    result["drivers"].append(driver)
+
     for obj in armatures:
         ev = obj.evaluated_get(deps)
         result["armatures"].append({"name": obj.name, "matrix": matrix_values(ev.matrix_world, scale, True),
@@ -850,7 +888,8 @@ class ECLIPSE_OT_export_armature(bpy.types.Operator, ExportHelper):
         with open(self.filepath, "w", encoding="utf-8") as f:
             json.dump(data, f, separators=(",", ":"))
         nhidden = sum(1 for b in data["bones"] if b.get("hidden"))
-        self.report({'INFO'}, f"Exported {len(data['bones'])} bones ({nhidden} hidden)")
+        nshapes = sum(len(mesh.get("shape_keys", [])) for mesh in data.get("skin_meshes", []))
+        self.report({'INFO'}, f"Exported {len(data['bones'])} bones ({nhidden} hidden), {nshapes} shape keys")
         return {'FINISHED'}
 
 
@@ -880,8 +919,13 @@ _registered = False
 
 def register():
     global _registered
-    if _registered or hasattr(bpy.types, "ECLIPSE_PT_export_panel"):
+    if _registered:
         return
+    legacy = sys.modules.get("eclipse_armature_export")
+    if legacy is not None and getattr(legacy, "_registered", False):
+        legacy.unregister()
+    if hasattr(bpy.types, "ECLIPSE_PT_export_panel"):
+        raise RuntimeError("Another Eclipse armature exporter is registered. Disable the standalone exporter and enable Eclipse again.")
     if not hasattr(bpy.types.Scene, "eclipse_export_scale"):
         bpy.types.Scene.eclipse_export_scale = bpy.props.FloatProperty(name="Studs per Unit", default=1.0, min=0.001, max=1000.0)
     for cls in classes:
