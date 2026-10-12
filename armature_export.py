@@ -612,11 +612,12 @@ def collect_armature(context, arm_obj, scale):
     result = {"format": "EclipseArmature", "version": 4, "name": arm_obj.name, "scale": scale,
               "matrix_layout": "row-major-4x4", "world_axes": "+X,+Z,-Y", "bone_axes": "BLENDER_LOCAL_XYZ",
               "primary_armature": arm_obj.name, "source_blender_version": bpy.app.version_string,
-              "source_eclipse_version": "1.5.11", "features": ["relative_shape_keys"],
+              "source_eclipse_version": "1.5.12", "features": ["relative_shape_keys"],
               "frame": context.scene.frame_current, "fps": context.scene.render.fps / context.scene.render.fps_base, "bones": [], "armatures": [], "objects": [],
               "drivers": [], "mesh_bindings": [], "skin_meshes": [], "rigid_meshes": [], "features": {"constraints": [], "driver_types": [], "inherit_scale": []}}
     constraints, driver_types, inherit = set(), set(), set()
     geometry_bindings = {}
+    visible_bindings = set()
     skinning = set()
     for obj in objects:
         if obj.type != 'MESH':
@@ -686,6 +687,8 @@ def collect_armature(context, arm_obj, scale):
             result["mesh_bindings"].append({"object": obj.name, "visible": obj.visible_get(), "bindings": bindings})
             for binding in bindings:
                 geometry_bindings.setdefault(binding["bone"], []).append(obj.name)
+                if obj.visible_get():
+                    visible_bindings.add(binding["bone"])
     visible_objects = visible_collection_objects(context)
     for obj in objects:
         ev = obj.evaluated_get(deps)
@@ -743,7 +746,7 @@ def collect_armature(context, arm_obj, scale):
                 "visibility": {"bone_hidden": bool(bone.hide), "collection_hidden": bone_collection_hidden(pbone)},
                 "collections": [collection.name for collection in bone.collections],
                 "skinning": bone_id(obj, pbone.name) in skinning,
-                "geometry_binding": bone_id(obj, pbone.name) in geometry_bindings,
+                "geometry_binding": bone_id(obj, pbone.name) in visible_bindings,
                 "bound_meshes": geometry_bindings.get(bone_id(obj, pbone.name), []),
                 "bbone_segments": bone.bbone_segments,
                 "properties": custom_properties(pbone), "constraints": [serialize_constraint(c, scale) for c in pb.constraints],
