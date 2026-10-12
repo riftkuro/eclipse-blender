@@ -290,22 +290,61 @@ def planar_widget(vertices):
     return all(abs(normal.dot(v)) <= tolerance for v in offsets)
 
 
-def shape_edges(world, mesh):
-    verts = [world @ v.co for v in mesh.vertices]
-    edge_keys = [tuple(e.vertices) for e in mesh.edges]
-    if not edge_keys and mesh.polygons:
-        seen = set()
-        for poly in mesh.polygons:
-            for k in poly.edge_keys:
-                seen.add(k)
-        edge_keys = list(seen)
-    return [(verts[a], verts[b]) for a, b in edge_keys]
+WIDGET_TRIANGLE_BUDGET = 1200
+WIDGET_EDGE_BUDGET = 1800
 
 
-def shape_tris(world, mesh):
+def widget_geometry(mesh):
+    vertices = [vertex.co.copy() for vertex in mesh.vertices]
+    edges = [tuple(edge.vertices) for edge in mesh.edges]
+    if not edges and mesh.polygons:
+        edges = sorted({key for poly in mesh.polygons for key in poly.edge_keys})
     mesh.calc_loop_triangles()
-    verts = [world @ v.co for v in mesh.vertices]
-    return [(verts[t.vertices[0]], verts[t.vertices[1]], verts[t.vertices[2]]) for t in mesh.loop_triangles]
+    triangles = [tuple(triangle.vertices) for triangle in mesh.loop_triangles]
+    return simplify_widget(vertices, edges, triangles)
+
+
+def cluster_widget(vertices, edges, triangles, resolution):
+    lower = Vector([min(v[i] for v in vertices) for i in range(3)])
+    upper = Vector([max(v[i] for v in vertices) for i in range(3)])
+    cell = max(upper - lower) / resolution or 1.0
+    slots, sums, counts, remap = {}, [], [], []
+    for vertex in vertices:
+        key = tuple(int((vertex[i] - lower[i]) / cell) for i in range(3))
+        index = slots.get(key)
+        if index is None:
+            index = slots[key] = len(sums)
+            sums.append(vertex.copy())
+            counts.append(1)
+        else:
+            sums[index] += vertex
+            counts[index] += 1
+        remap.append(index)
+    merged = [total / count for total, count in zip(sums, counts)]
+    new_triangles, seen = [], set()
+    for a, b, c in triangles:
+        a, b, c = remap[a], remap[b], remap[c]
+        key = tuple(sorted((a, b, c)))
+        if a == b or b == c or a == c or key in seen:
+            continue
+        seen.add(key)
+        new_triangles.append((a, b, c))
+    new_edges = sorted({tuple(sorted((remap[a], remap[b]))) for a, b in edges if remap[a] != remap[b]})
+    used = sorted({i for t in new_triangles for i in t} | {i for e in new_edges for i in e})
+    order = {old: new for new, old in enumerate(used)}
+    return ([merged[i] for i in used], [(order[a], order[b]) for a, b in new_edges],
+        [(order[a], order[b], order[c]) for a, b, c in new_triangles])
+
+
+def simplify_widget(vertices, edges, triangles):
+    if len(triangles) <= WIDGET_TRIANGLE_BUDGET and len(edges) <= WIDGET_EDGE_BUDGET:
+        return vertices, edges, triangles
+    best = None
+    for resolution in (64, 48, 40, 32, 26, 20, 16, 12, 8, 6, 4):
+        best = cluster_widget(vertices, edges, triangles, resolution)
+        if len(best[2]) <= WIDGET_TRIANGLE_BUDGET and len(best[1]) <= WIDGET_EDGE_BUDGET:
+            break
+    return best
 
 
 def widget_names():
@@ -739,20 +778,19 @@ def collect_armature(context, arm_obj, scale):
                 try:
                     mesh = shape.to_mesh()
                     if mesh is not None:
-                        
-                        
-                        entry["display"]["vertices"] = [[float(v) for v in vertex.co] for vertex in mesh.vertices]
-                        entry["display"]["edges"] = [list(edge.vertices) for edge in mesh.edges]
-                        mesh.calc_loop_triangles()
-                        entry["display"]["triangles"] = [list(triangle.vertices) for triangle in mesh.loop_triangles]
+                        local, edge_list, triangle_list = widget_geometry(mesh)
+                        entry["display"]["vertices"] = [[float(v) for v in vertex] for vertex in local]
+                        entry["display"]["edges"] = [list(edge) for edge in edge_list]
+                        entry["display"]["triangles"] = [list(triangle) for triangle in triangle_list]
                         world = custom_shape_world_matrix(ev, pb)
-                        planar = planar_widget([vertex.co for vertex in mesh.vertices])
+                        placed = [world @ vertex for vertex in local]
+                        planar = planar_widget(local)
                         if planar:
                             entry["display"]["triangles"] = []
                         if mesh.polygons and not bone.show_wire and not planar:
                             entry["solid"] = True
-                            entry["tris"] = [[to_roblox(a, scale), to_roblox(b, scale), to_roblox(c, scale)] for a, b, c in shape_tris(world, mesh)]
-                        entry["edges"] = [[to_roblox(a, scale), to_roblox(b, scale)] for a, b in shape_edges(world, mesh)]
+                            entry["tris"] = [[to_roblox(placed[a], scale), to_roblox(placed[b], scale), to_roblox(placed[c], scale)] for a, b, c in triangle_list]
+                        entry["edges"] = [[to_roblox(placed[a], scale), to_roblox(placed[b], scale)] for a, b in edge_list]
                         handled = True
                 except RuntimeError:
                     pass
