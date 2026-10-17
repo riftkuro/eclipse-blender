@@ -95,7 +95,7 @@ def connected_objects(context, arm_obj):
         changed = False
         for obj, refs in dependencies.items():
             
-            if obj in connected or (obj.type in {'MESH', 'ARMATURE'} and refs & connected):
+            if obj in connected or obj.parent in connected or (obj.type in {'MESH', 'ARMATURE'} and refs & connected):
                 for entry in {obj} | refs:
                     if entry not in connected:
                         connected.add(entry)
@@ -612,7 +612,7 @@ def collect_armature(context, arm_obj, scale):
     result = {"format": "EclipseArmature", "version": 4, "name": arm_obj.name, "scale": scale,
               "matrix_layout": "row-major-4x4", "world_axes": "+X,+Z,-Y", "bone_axes": "BLENDER_LOCAL_XYZ",
               "primary_armature": arm_obj.name, "source_blender_version": bpy.app.version_string,
-              "source_eclipse_version": "1.5.12", "features": ["relative_shape_keys"],
+              "source_eclipse_version": "1.5.15", "features": ["relative_shape_keys"],
               "frame": context.scene.frame_current, "fps": context.scene.render.fps / context.scene.render.fps_base, "bones": [], "armatures": [], "objects": [],
               "drivers": [], "mesh_bindings": [], "skin_meshes": [], "rigid_meshes": [], "features": {"constraints": [], "driver_types": [], "inherit_scale": []}}
     constraints, driver_types, inherit = set(), set(), set()
@@ -718,7 +718,7 @@ def collect_armature(context, arm_obj, scale):
 
     for obj in armatures:
         ev = obj.evaluated_get(deps)
-        result["armatures"].append({"name": obj.name, "matrix": matrix_values(ev.matrix_world, scale, True),
+        result["armatures"].append({"name": obj.name, "data_name": obj.data.name, "matrix": matrix_values(ev.matrix_world, scale, True),
             "pose_position": obj.data.pose_position, "display_type": obj.data.display_type,
             "bone_collections": export_bone_collections(obj),
             "show_in_front": obj.show_in_front, "properties": custom_properties(obj.data)})
