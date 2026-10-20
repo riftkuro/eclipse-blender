@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'Eclipse',
     'author': 'riftkuro',
-    'version': (1, 5, 15),
+    'version': (1, 5, 16),
     'blender': (4, 2, 0),
     'location': 'View3D > Sidebar > Eclipse',
     'description': 'Sync rigs, custom output bones and cameras with an Eclipse animation file, and export armatures to Eclipse',
@@ -13,6 +13,7 @@ from bpy.app.handlers import persistent
 from bpy_extras.io_utils import ImportHelper
 from . import engine
 from . import armature_export
+from .camera_fov import ECLIPSE_OT_copy_camera_fov
 
 
 class ECLIPSE_OT_server(bpy.types.Operator):
@@ -106,6 +107,7 @@ class ECLIPSE_PT_main(bpy.types.Panel):
             box.label(text='Open a file in Eclipse, then Blender Import.')
         layout.operator('eclipse.import_rig', text='Import Rig (.obj)', icon='IMPORT')
         layout.operator('eclipse.camera_rig', icon='CAMERA_DATA')
+        layout.operator('eclipse.copy_camera_fov', icon='COPYDOWN')
         layout.label(text='Pair existing custom output rigs in Eclipse.')
 
 
@@ -114,7 +116,7 @@ def before_load(_):
     engine.disconnect()
 
 
-_classes = (ECLIPSE_OT_server, ECLIPSE_OT_bake, ECLIPSE_OT_import_rig, ECLIPSE_OT_camera_rig, ECLIPSE_PT_main)
+_classes = (ECLIPSE_OT_server, ECLIPSE_OT_bake, ECLIPSE_OT_import_rig, ECLIPSE_OT_camera_rig, ECLIPSE_OT_copy_camera_fov, ECLIPSE_PT_main)
 _registered = False
 
 

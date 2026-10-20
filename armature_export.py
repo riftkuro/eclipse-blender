@@ -612,7 +612,7 @@ def collect_armature(context, arm_obj, scale):
     result = {"format": "EclipseArmature", "version": 4, "name": arm_obj.name, "scale": scale,
               "matrix_layout": "row-major-4x4", "world_axes": "+X,+Z,-Y", "bone_axes": "BLENDER_LOCAL_XYZ",
               "primary_armature": arm_obj.name, "source_blender_version": bpy.app.version_string,
-              "source_eclipse_version": "1.5.15", "features": ["relative_shape_keys"],
+              "source_eclipse_version": "1.5.16", "features": ["relative_shape_keys"],
               "frame": context.scene.frame_current, "fps": context.scene.render.fps / context.scene.render.fps_base, "bones": [], "armatures": [], "objects": [],
               "drivers": [], "mesh_bindings": [], "skin_meshes": [], "rigid_meshes": [], "features": {"constraints": [], "driver_types": [], "inherit_scale": []}}
     constraints, driver_types, inherit = set(), set(), set()
